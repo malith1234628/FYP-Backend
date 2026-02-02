@@ -10,6 +10,7 @@ const db = require("./config/database");
 
 // Import routes
 const authRoutes = require("./routes/authRoutes");
+const studentDocumentRoutes = require("./routes/studentDocumentRoutes");
 
 const app = express();
 app.use(cors());
@@ -33,6 +34,11 @@ const upload = multer({
 // Authentication Routes
 // ----------------------
 app.use("/auth", authRoutes);
+
+// ----------------------
+// Student Document Routes
+// ----------------------
+app.use("/api/students/documents", studentDocumentRoutes);
 
 // Flask API base URL
 const FLASK_URL = process.env.FLASK_URL || "http://127.0.0.1:5001";

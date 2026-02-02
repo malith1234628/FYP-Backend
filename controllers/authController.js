@@ -341,9 +341,9 @@ const saveAgencyServices = async (req, res) => {
 
   try {
     const { user_id, services } = req.body;
-    
+
     // services format: [{ country: 'UK', processing_time: '4-6 weeks', universities: ['Oxford', 'Cambridge'] }]
-    
+
     if (!user_id || !services || !Array.isArray(services)) {
       return res.status(400).json({
         success: false,
@@ -405,10 +405,253 @@ const saveAgencyServices = async (req, res) => {
   }
 };
 
+// Save Agency Statistics (Step 3 - Performance Information)
+const saveAgencyStatistics = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { user_id, total_students_handled, total_visas_approved } = req.body;
+
+    // Validate input
+    if (!user_id || total_students_handled === undefined || total_visas_approved === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'user_id, total_students_handled, and total_visas_approved are required'
+      });
+    }
+
+    // Validate numbers
+    const studentsHandled = parseInt(total_students_handled);
+    const visasApproved = parseInt(total_visas_approved);
+
+    if (isNaN(studentsHandled) || isNaN(visasApproved) || studentsHandled < 0 || visasApproved < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid numbers provided for students or visas'
+      });
+    }
+
+    if (visasApproved > studentsHandled) {
+      return res.status(400).json({
+        success: false,
+        message: 'Total visas approved cannot exceed total students handled'
+      });
+    }
+
+    // Calculate approval rate (as a percentage)
+    const approvalRate = studentsHandled > 0
+      ? parseFloat(((visasApproved / studentsHandled) * 100).toFixed(2))
+      : 0;
+
+    // Start transaction
+    await connection.beginTransaction();
+
+    // Check if agency exists
+    const [agencies] = await connection.execute(
+      'SELECT user_id FROM agencies WHERE user_id = ?',
+      [user_id]
+    );
+
+    if (agencies.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Agency not found'
+      });
+    }
+
+    // Update agencies table with statistics
+    await connection.execute(
+      `UPDATE agencies
+       SET total_students_handled = ?,
+           total_visas_approved = ?,
+           approval_rate = ?,
+           updated_at = NOW()
+       WHERE user_id = ?`,
+      [studentsHandled, visasApproved, approvalRate, user_id]
+    );
+
+    // Commit transaction
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: 'Agency statistics saved successfully',
+      data: {
+        total_students_handled: studentsHandled,
+        total_visas_approved: visasApproved,
+        approval_rate: approvalRate
+      }
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Save agency statistics error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save agency statistics',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+// Save University Forms (Step 4 - Form Builder)
+const saveUniversityForms = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { user_id, university_forms } = req.body;
+
+    // Validate input
+    if (!user_id || !university_forms || typeof university_forms !== 'object') {
+      return res.status(400).json({
+        success: false,
+        message: 'user_id and university_forms object are required'
+      });
+    }
+
+    // Start transaction
+    await connection.beginTransaction();
+
+    // Get agency_id from user_id
+    const [agencies] = await connection.execute(
+      'SELECT id FROM agencies WHERE user_id = ?',
+      [user_id]
+    );
+
+    if (agencies.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Agency not found for this user'
+      });
+    }
+
+    const agencyId = agencies[0].id;
+    const savedForms = [];
+    const errors = [];
+
+    // Process each university form
+    for (const [universityName, formData] of Object.entries(university_forms)) {
+      try {
+        const { formTitle, formDescription, questions } = formData;
+
+        // Validate form data
+        if (!formTitle || !questions || !Array.isArray(questions)) {
+          errors.push({ university: universityName, error: 'Invalid form data' });
+          continue;
+        }
+
+        // Find the agency_university_id for this university
+        const [universityRecords] = await connection.execute(
+          `SELECT au.id
+           FROM agency_universities au
+           JOIN agency_services as2 ON au.service_id = as2.id
+           WHERE as2.user_id = ? AND au.university_name = ?
+           LIMIT 1`,
+          [user_id, universityName]
+        );
+
+        const agencyUniversityId = universityRecords.length > 0 ? universityRecords[0].id : null;
+
+        // Generate UUID for form
+        const formId = crypto.randomUUID();
+
+        // Check if form already exists for this agency and university
+        const [existingForms] = await connection.execute(
+          `SELECT id FROM university_forms
+           WHERE agency_id = ? AND agency_university_id = ?`,
+          [agencyId, agencyUniversityId]
+        );
+
+        if (existingForms.length > 0) {
+          // Update existing form
+          await connection.execute(
+            `UPDATE university_forms
+             SET form_title = ?,
+                 form_description = ?,
+                 questions = ?,
+                 updated_at = NOW()
+             WHERE agency_id = ? AND agency_university_id = ?`,
+            [
+              formTitle,
+              formDescription || '',
+              JSON.stringify(questions),
+              agencyId,
+              agencyUniversityId
+            ]
+          );
+
+          savedForms.push({
+            university: universityName,
+            form_id: existingForms[0].id,
+            action: 'updated'
+          });
+        } else {
+          // Insert new form
+          await connection.execute(
+            `INSERT INTO university_forms
+             (id, agency_id, agency_university_id, form_title, form_description, questions, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            [
+              formId,
+              agencyId,
+              agencyUniversityId,
+              formTitle,
+              formDescription || '',
+              JSON.stringify(questions)
+            ]
+          );
+
+          savedForms.push({
+            university: universityName,
+            form_id: formId,
+            action: 'created'
+          });
+        }
+      } catch (formError) {
+        console.error(`Error saving form for ${universityName}:`, formError);
+        errors.push({
+          university: universityName,
+          error: formError.message
+        });
+      }
+    }
+
+    // Commit transaction
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: 'University forms saved successfully',
+      data: {
+        saved_forms: savedForms,
+        total_saved: savedForms.length,
+        errors: errors.length > 0 ? errors : undefined
+      }
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Save university forms error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save university forms',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+};
+
 module.exports = {
   registerStudent,
   registerAgency,
   login,
   getProfile,
-  saveAgencyServices
+  saveAgencyServices,
+  saveAgencyStatistics,
+  saveUniversityForms
 };
