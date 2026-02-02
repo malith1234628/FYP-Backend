@@ -35,9 +35,9 @@ const validateStudentRegistration = (data) => {
     errors.push('Valid phone number is required');
   }
 
-  if (!data.country || data.country.trim().length < 2) {
-    errors.push('Country is required');
-  }
+  // if (!data.country || data.country.trim().length < 2) {
+  //   errors.push('Country is required');
+  // }
 
   return errors;
 };
@@ -63,6 +63,14 @@ const validateAgencyRegistration = (data) => {
 
   if (!data.address || data.address.trim().length < 5) {
     errors.push('Address is required (minimum 5 characters)');
+  }
+
+  if (!data.country_of_operation || data.country_of_operation.trim().length < 2) {
+    errors.push('Country of operation is required');
+  }
+
+  if (!data.license_number || data.license_number.trim().length < 2) {
+    errors.push('License number (business registration number) is required');
   }
 
   return errors;

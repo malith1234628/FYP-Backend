@@ -1,6 +1,8 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const multer = require("multer");
+const FormData = require("form-data");
 require("dotenv").config();
 
 // Import database connection (uses mysql2/promise with connection pool)
@@ -12,6 +14,20 @@ const authRoutes = require("./routes/authRoutes");
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Configure multer for file uploads (memory storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Invalid file type. Only PDF, DOC, and DOCX files are allowed."));
+    }
+  },
+});
 
 // ----------------------
 // Authentication Routes
@@ -126,6 +142,54 @@ app.post("/api/predict-university", async (req, res) => {
   } catch (err) {
     if (err.response) return res.status(err.response.status).json(err.response.data);
     return res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+// ----------------------
+// Proxy: CV Data Extraction
+// POST /api/extract-cv -> Flask POST /extract_cv
+// Accepts multipart/form-data with 'file' field (PDF, DOC, DOCX)
+// ----------------------
+app.post("/api/extract-cv", upload.single("file"), async (req, res) => {
+  try {
+    // Check if file was uploaded
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded. Please upload a PDF, DOC, or DOCX file." });
+    }
+
+    console.log("File received:", req.file.originalname, req.file.mimetype, req.file.size, "bytes");
+
+    // Create FormData to forward file to Flask
+    const formData = new FormData();
+    formData.append("file", req.file.buffer, {
+      filename: req.file.originalname,
+      contentType: req.file.mimetype,
+    });
+
+    console.log("Forwarding to Flask:", `${FLASK_URL}/extract_cv`);
+
+    // Forward to Flask with proper headers
+    const r = await axios.post(`${FLASK_URL}/extract_cv`, formData, {
+      headers: {
+        ...formData.getHeaders(),
+      },
+      timeout: 30000, // 30s timeout for CV processing
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+
+    console.log("Flask response received successfully");
+    return res.status(200).json(r.data);
+  } catch (err) {
+    console.error("CV extraction error:", err.message);
+    if (err.response) {
+      console.error("Flask error response:", err.response.status, err.response.data);
+      return res.status(err.response.status).json(err.response.data);
+    }
+    return res.status(500).json({ 
+      error: "CV extraction failed", 
+      details: err.message 
+    });
   }
 });
 

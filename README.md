@@ -3,7 +3,7 @@
 Node.js + Express backend with JWT authentication for the Visa Agency Marketplace application.
 
 ## Features
-malith
+
 - Student and Agency registration
 - Secure authentication with JWT
 - Password hashing with bcrypt

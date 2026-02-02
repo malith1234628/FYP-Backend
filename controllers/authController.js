@@ -106,7 +106,7 @@ const registerAgency = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { email, password, agency_name, phone, address, license_number } = req.body;
+    const { email, password, agency_name, phone, address, license_number, country_of_operation } = req.body;
 
     // Validate input
     const errors = validateAgencyRegistration(req.body);
@@ -150,8 +150,8 @@ const registerAgency = async (req, res) => {
 
     // Insert into agencies table
     await connection.execute(
-      'INSERT INTO agencies (user_id, agency_name, contact_phone, head_office_address, business_registration_number, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())',
-      [userId, agency_name, phone, address, license_number || null]
+      'INSERT INTO agencies (user_id, agency_name, contact_phone, head_office_address, business_registration_number, country_of_operation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())',
+      [userId, agency_name, phone, address, license_number, country_of_operation]
     );
 
     // Commit transaction
@@ -167,7 +167,7 @@ const registerAgency = async (req, res) => {
     // Fetch the complete user with profile
     const [users] = await connection.execute(
       `SELECT u.id, u.email, u.user_type, u.created_at,
-              a.agency_name, a.contact_phone, a.head_office_address, a.business_registration_number
+              a.agency_name, a.contact_phone, a.head_office_address, a.business_registration_number, a.country_of_operation
        FROM users u
        LEFT JOIN agencies a ON u.id = a.user_id
        WHERE u.id = ?`,
@@ -257,7 +257,7 @@ const login = async (req, res) => {
     } else if (user.user_type === 'agency') {
       const [agencyData] = await db.execute(
         `SELECT u.id, u.email, u.user_type, u.created_at,
-                a.agency_name, a.contact_phone, a.head_office_address, a.business_registration_number
+                a.agency_name, a.contact_phone, a.head_office_address, a.business_registration_number, a.country_of_operation
          FROM users u
          LEFT JOIN agencies a ON u.id = a.user_id
          WHERE u.id = ?`,
@@ -304,7 +304,7 @@ const getProfile = async (req, res) => {
     } else if (userRole === 'agency') {
       const [agencyData] = await db.execute(
         `SELECT u.id, u.email, u.user_type, u.created_at,
-                a.agency_name, a.contact_phone, a.head_office_address, a.business_registration_number
+                a.agency_name, a.contact_phone, a.head_office_address, a.business_registration_number, a.country_of_operation
          FROM users u
          LEFT JOIN agencies a ON u.id = a.user_id
          WHERE u.id = ?`,
@@ -335,9 +335,80 @@ const getProfile = async (req, res) => {
   }
 };
 
+// Save Agency Services Configuration
+const saveAgencyServices = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { user_id, services } = req.body;
+    
+    // services format: [{ country: 'UK', processing_time: '4-6 weeks', universities: ['Oxford', 'Cambridge'] }]
+    
+    if (!user_id || !services || !Array.isArray(services)) {
+      return res.status(400).json({
+        success: false,
+        message: 'user_id and services array are required'
+      });
+    }
+
+    // Start transaction
+    await connection.beginTransaction();
+
+    // Delete existing services for this agency
+    await connection.execute(
+      'DELETE FROM agency_services WHERE user_id = ?',
+      [user_id]
+    );
+
+    // Insert new services
+    for (const service of services) {
+      if (!service.country || !service.processing_time || !service.universities) {
+        continue;
+      }
+
+      const [result] = await connection.execute(
+        'INSERT INTO agency_services (user_id, country, processing_time) VALUES (?, ?, ?)',
+        [user_id, service.country, service.processing_time]
+      );
+
+      const serviceId = result.insertId;
+
+      // Insert universities for this service
+      for (const university of service.universities) {
+        if (university) {
+          await connection.execute(
+            'INSERT INTO agency_universities (service_id, university_name) VALUES (?, ?)',
+            [serviceId, university]
+          );
+        }
+      }
+    }
+
+    // Commit transaction
+    await connection.commit();
+
+    res.status(200).json({
+      success: true,
+      message: 'Agency services saved successfully'
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Save agency services error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save services',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+};
+
 module.exports = {
   registerStudent,
   registerAgency,
   login,
-  getProfile
+  getProfile,
+  saveAgencyServices
 };

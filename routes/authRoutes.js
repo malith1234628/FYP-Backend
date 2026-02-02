@@ -4,7 +4,8 @@ const {
   registerStudent,
   registerAgency,
   login,
-  getProfile
+  getProfile,
+  saveAgencyServices
 } = require('../controllers/authController');
 const { authenticate } = require('../middleware/auth');
 
@@ -15,5 +16,6 @@ router.post('/login', login);
 
 // Protected routes (authentication required)
 router.get('/profile', authenticate, getProfile);
+router.post('/agency/services', authenticate, saveAgencyServices);
 
 module.exports = router;
