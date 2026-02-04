@@ -646,6 +646,97 @@ const saveUniversityForms = async (req, res) => {
   }
 };
 
+// Get University Form by Agency and University
+const getUniversityForm = async (req, res) => {
+  const connection = await db.getConnection();
+
+  try {
+    const { agency_id, university_name } = req.query;
+
+    console.log('📥 Get form request:', { agency_id, university_name });
+
+    if (!agency_id || !university_name) {
+      return res.status(400).json({
+        success: false,
+        message: 'agency_id and university_name are required'
+      });
+    }
+
+    // First, find the agency_university_id by joining through agency_services
+    const [agencyUniversities] = await connection.execute(
+      `SELECT au.id 
+       FROM agency_universities au
+       JOIN agency_services s ON au.service_id = s.id
+       WHERE s.user_id = ? AND au.university_name = ?`,
+      [agency_id, university_name]
+    );
+
+    console.log('🔍 Found agency_universities:', agencyUniversities);
+
+    if (agencyUniversities.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No services found for this agency and university combination'
+      });
+    }
+
+    const agencyUniversityId = agencyUniversities[0].id;
+
+    // Fetch the form
+    const [forms] = await connection.execute(
+      `SELECT id, form_title, form_description, questions, created_at, updated_at
+       FROM university_forms 
+       WHERE agency_university_id = ?`,
+      [agencyUniversityId]
+    );
+
+    console.log('📋 Found forms:', forms.length);
+
+    if (forms.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No form found for this university. The agency may not have created a form yet.'
+      });
+    }
+
+    const form = forms[0];
+    
+    // Parse the JSON questions
+    let questions = [];
+    if (form.questions) {
+      try {
+        questions = typeof form.questions === 'string' 
+          ? JSON.parse(form.questions) 
+          : form.questions;
+      } catch (parseError) {
+        console.error('Error parsing questions:', parseError);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      form: {
+        id: form.id,
+        formTitle: form.form_title,
+        formDescription: form.form_description,
+        questions: questions,
+        createdAt: form.created_at,
+        updatedAt: form.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Get university form error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch university form',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+};
+
 module.exports = {
   registerStudent,
   registerAgency,
@@ -653,5 +744,6 @@ module.exports = {
   getProfile,
   saveAgencyServices,
   saveAgencyStatistics,
-  saveUniversityForms
+  saveUniversityForms,
+  getUniversityForm
 };

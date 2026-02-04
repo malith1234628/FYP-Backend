@@ -1,116 +1,141 @@
 const db = require('../config/database');
+const axios = require('axios');
+const FormData = require('form-data');
+
+const FLASK_URL = process.env.FLASK_URL || 'http://127.0.0.1:5001';
+
+// ---------------------------------------------------------------------------
+// OCR helpers – call Flask, return extracted_data or null on any failure
+// ---------------------------------------------------------------------------
+async function runPassportOCR(file) {
+  try {
+    const fd = new FormData();
+    fd.append('file', file.buffer, { filename: file.originalname, contentType: file.mimetype });
+
+    const { data } = await axios.post(`${FLASK_URL}/extract_passport`, fd, {
+      headers: fd.getHeaders(),
+      timeout: 30000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+
+    return data?.extracted_data || null;
+  } catch (err) {
+    console.error('Passport OCR failed:', err.message);
+    return null;
+  }
+}
+
+async function runCvOCR(file) {
+  try {
+    const fd = new FormData();
+    fd.append('file', file.buffer, { filename: file.originalname, contentType: file.mimetype });
+
+    const { data } = await axios.post(`${FLASK_URL}/extract_cv`, fd, {
+      headers: fd.getHeaders(),
+      timeout: 30000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+
+    return data?.extracted_data || null;
+  } catch (err) {
+    console.error('CV OCR failed:', err.message);
+    return null;
+  }
+}
 
 /**
- * Upload student documents (passport and/or CV)
- * Accepts multipart/form-data with 'passport' and/or 'cv' file fields
- * Files are stored in the database as binary data along with metadata
+ * Upload student documents (passport and/or CV).
+ * After persisting the raw files the handler fires both OCR extractors
+ * in parallel, saves whatever they return into the JSON columns, and
+ * includes the extracted data in the response.
  */
 const uploadStudentDocuments = async (req, res) => {
   const connection = await db.getConnection();
 
   try {
-    const { userId } = req.body; // User ID from request body or JWT token
-    const studentId = userId || req.user?.id; // Support both authenticated and non-authenticated uploads
+    const { userId } = req.body;
+    const studentId = userId || req.user?.id;
 
     if (!studentId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Student user ID is required'
-      });
+      return res.status(400).json({ success: false, message: 'Student user ID is required' });
     }
 
-    // Check if files were uploaded
     const passportFile = req.files?.passport?.[0];
     const cvFile = req.files?.cv?.[0];
 
     if (!passportFile && !cvFile) {
-      return res.status(400).json({
-        success: false,
-        message: 'At least one file (passport or CV) is required'
-      });
+      return res.status(400).json({ success: false, message: 'At least one file (passport or CV) is required' });
     }
 
-    // Start transaction
+    // Kick off OCR extractions immediately – they run while we hit the DB
+    const [passportExtracted, cvExtracted] = await Promise.all([
+      passportFile ? runPassportOCR(passportFile) : null,
+      cvFile        ? runCvOCR(cvFile)            : null,
+    ]);
+
     await connection.beginTransaction();
 
-    // Check if student exists
+    // Verify student row exists
     const [students] = await connection.execute(
-      'SELECT id, user_id FROM students WHERE user_id = ?',
-      [studentId]
+      'SELECT user_id FROM students WHERE user_id = ?', [studentId]
     );
-
     if (students.length === 0) {
       await connection.rollback();
-      return res.status(404).json({
-        success: false,
-        message: 'Student not found'
-      });
+      return res.status(404).json({ success: false, message: 'Student not found' });
     }
 
-    // Build update query dynamically based on uploaded files
-    const updates = [];
-    const values = [];
+    // Build SET clause dynamically
+    const sets  = [];
+    const vals  = [];
 
     if (passportFile) {
-      updates.push(
-        'passport_file = ?',
-        'passport_filename = ?',
-        'passport_mimetype = ?',
-        'passport_uploaded_at = NOW()'
-      );
-      values.push(
-        passportFile.buffer,
-        passportFile.originalname,
-        passportFile.mimetype
-      );
+      sets.push('passport_file = ?', 'passport_filename = ?', 'passport_mimetype = ?', 'passport_uploaded_at = NOW()');
+      vals.push(passportFile.buffer, passportFile.originalname, passportFile.mimetype);
+
+      if (passportExtracted) {
+        sets.push('passport_extracted_data = ?');
+        vals.push(JSON.stringify(passportExtracted));
+      }
     }
 
     if (cvFile) {
-      updates.push(
-        'cv_file = ?',
-        'cv_filename = ?',
-        'cv_mimetype = ?',
-        'cv_uploaded_at = NOW()'
-      );
-      values.push(
-        cvFile.buffer,
-        cvFile.originalname,
-        cvFile.mimetype
-      );
+      sets.push('cv_file = ?', 'cv_filename = ?', 'cv_mimetype = ?', 'cv_uploaded_at = NOW()');
+      vals.push(cvFile.buffer, cvFile.originalname, cvFile.mimetype);
+
+      if (cvExtracted) {
+        sets.push('cv_extracted_data = ?');
+        vals.push(JSON.stringify(cvExtracted));
+      }
     }
 
-    // Add user_id for WHERE clause
-    values.push(studentId);
+    vals.push(studentId); // WHERE clause
 
-    // Update student record with file data
-    const updateQuery = `
-      UPDATE students
-      SET ${updates.join(', ')}, updated_at = NOW()
-      WHERE user_id = ?
-    `;
+    await connection.execute(
+      `UPDATE students SET ${sets.join(', ')}, updated_at = NOW() WHERE user_id = ?`,
+      vals
+    );
 
-    await connection.execute(updateQuery, values);
-
-    // Commit transaction
     await connection.commit();
 
     res.status(200).json({
       success: true,
-      message: 'Documents uploaded successfully',
+      message: 'Documents uploaded and data extracted successfully',
       uploaded: {
         passport: passportFile ? passportFile.originalname : null,
-        cv: cvFile ? cvFile.originalname : null
-      }
+        cv:       cvFile        ? cvFile.originalname        : null,
+      },
+      extracted: {
+        passport: passportExtracted,
+        cv:       cvExtracted,
+      },
     });
 
   } catch (error) {
     await connection.rollback();
     console.error('Document upload error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to upload documents',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to upload documents', error: error.message });
   } finally {
     connection.release();
   }
