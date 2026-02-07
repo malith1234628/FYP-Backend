@@ -10,15 +10,17 @@ USE visa_marketplace;
 -- Stores basic user information and credentials
 -- =====================================================
 CREATE TABLE IF NOT EXISTS users (
-  id INT PRIMARY KEY AUTO_INCREMENT,
+  id CHAR(36) PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
-  password VARCHAR(255) NOT NULL COMMENT 'bcrypt hashed password',
-  role ENUM('STUDENT', 'AGENCY') NOT NULL,
+  password_hash VARCHAR(255) NOT NULL COMMENT 'bcrypt hashed password',
+  user_type ENUM('student', 'agency', 'agent', 'admin') NOT NULL,
+  is_email_verified TINYINT(1) DEFAULT 0,
+  last_login_at TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
   INDEX idx_email (email),
-  INDEX idx_role (role)
+  INDEX idx_user_type (user_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================
@@ -57,6 +59,33 @@ CREATE TABLE IF NOT EXISTS agency_profiles (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   INDEX idx_user_id (user_id),
   INDEX idx_agency_name (agency_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =====================================================
+-- AGENCY SERVICES TABLE
+-- Stores countries and universities that agencies support
+-- =====================================================
+CREATE TABLE IF NOT EXISTS agency_services (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id CHAR(36) NOT NULL,
+  country VARCHAR(100) NOT NULL,
+  processing_time VARCHAR(50) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_user_id (user_id),
+  INDEX idx_country (country)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS agency_universities (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  service_id INT NOT NULL,
+  university_name VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+  FOREIGN KEY (service_id) REFERENCES agency_services(id) ON DELETE CASCADE,
+  INDEX idx_service_id (service_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================
